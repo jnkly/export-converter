@@ -59,7 +59,7 @@ async def upload(file: UploadFile = File(...)):
 
     # Load JSON
     with open(json_file, encoding="utf-8", errors="replace") as f:
-    data = json.load(f)
+        data = json.load(f)
 
     resources = data.get("resources", {})
 
