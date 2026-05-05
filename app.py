@@ -57,7 +57,7 @@ async def upload(file: UploadFile = File(...)):
     if not json_file:
         return {"error": "No JSON file found in ZIP"}
 
-    # Load JSON
+    # Load JSON safely
     with open(json_file, encoding="utf-8", errors="replace") as f:
         data = json.load(f)
 
