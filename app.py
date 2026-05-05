@@ -17,17 +17,21 @@ os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 
 # -----------------------------
-# Helper functions (safe + simple)
+# Helper functions
 # -----------------------------
 
-def get_label(field):
+def get_label(obj):
+    if isinstance(obj.get("label"), dict):
+        return obj["label"].get("en")
+
     return (
-        field.get("label")
-        or field.get("title")
-        or field.get("name")
-        or field.get("key")
-        or "Unnamed field"
+        obj.get("label")
+        or obj.get("title")
+        or obj.get("name")
+        or obj.get("identifier")
+        or "Unnamed"
     )
+
 
 def get_type(field):
     return (
@@ -37,17 +41,22 @@ def get_type(field):
         or "unknown"
     )
 
+
 def is_user_field(field):
-    name = str(field.get("name", "")).lower()
+    name = str(field.get("identifier", "")).lower()
+
     return not any(x in name for x in [
         "created", "updated", "status", "reference", "id", "internal"
     ])
 
+
 def get_required(field):
     return field.get("required") or field.get("is_required") or False
 
+
 def get_help_text(field):
     return field.get("help_text") or field.get("description") or ""
+
 
 def get_options(field):
     return field.get("options") or field.get("choices") or []
@@ -71,7 +80,7 @@ def home():
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     try:
-        # Save uploaded file
+        # Save file
         zip_path = os.path.join(UPLOAD_DIR, file.filename)
         with open(zip_path, "wb") as f:
             f.write(await file.read())
@@ -85,7 +94,7 @@ async def upload(file: UploadFile = File(...)):
         with zipfile.ZipFile(zip_path, 'r') as zip_ref:
             zip_ref.extractall(EXTRACT_DIR)
 
-        # Find valid Jadu JSON
+        # Find valid JSON
         json_file = None
 
         for root, _, files in os.walk(EXTRACT_DIR):
@@ -111,7 +120,7 @@ async def upload(file: UploadFile = File(...)):
                 break
 
         if not json_file:
-            return {"error": "No valid Jadu JSON file found in ZIP"}
+            return {"error": "No valid Jadu JSON file found"}
 
         # Load JSON
         with open(json_file, encoding="utf-8", errors="replace") as f:
@@ -126,19 +135,20 @@ async def upload(file: UploadFile = File(...)):
             grouped.setdefault(rtype, []).append(value)
 
         # -----------------------------
-        # Build Word document
+        # Build document
         # -----------------------------
 
         doc = Document()
-
         doc.add_heading("Form specification", 0)
 
         # Overview
-        doc.add_heading("Overview", level=1)
-        doc.add_paragraph("Generated from Jadu export. This describes the user-facing form structure.")
+        doc.add_heading("Overview", 1)
+        doc.add_paragraph("Generated from Jadu export. This describes the user-facing form and workflow.")
 
+        # -----------------------------
         # Fields
-        doc.add_heading("Form fields", level=1)
+        # -----------------------------
+        doc.add_heading("Form fields", 1)
 
         for field in grouped.get("case-field", []):
             if not isinstance(field, dict):
@@ -153,7 +163,7 @@ async def upload(file: UploadFile = File(...)):
             help_text = get_help_text(field)
             options = get_options(field)
 
-            doc.add_heading(str(label), level=2)
+            doc.add_heading(str(label), 2)
             doc.add_paragraph(f"Type: {ftype}")
             doc.add_paragraph(f"Required: {'Yes' if required else 'No'}")
 
@@ -165,24 +175,55 @@ async def upload(file: UploadFile = File(...)):
                 for opt in options:
                     doc.add_paragraph(f"- {opt}", style='List Bullet')
 
-        # Workflow
-        doc.add_heading("Case workflow", level=1)
+        # -----------------------------
+        # Workflow (statuses)
+        # -----------------------------
+        doc.add_heading("Case workflow", 1)
 
         for status in grouped.get("case-status", []):
             if not isinstance(status, dict):
                 continue
 
-            name = (
-                status.get("label")
-                or status.get("title")
-                or status.get("name")
-                or "Unnamed status"
-            )
+            name = get_label(status)
+            doc.add_paragraph(str(name))
+
+        # -----------------------------
+        # Transitions
+        # -----------------------------
+        doc.add_heading("Transitions", 1)
+
+        for transition in grouped.get("case-transition", []):
+            if not isinstance(transition, dict):
+                continue
+
+            name = get_label(transition)
+
+            from_status = transition.get("from_status")
+            to_status = transition.get("to_status")
 
             doc.add_paragraph(str(name))
 
+            if from_status or to_status:
+                doc.add_paragraph(
+                    f"From: {from_status or 'Unknown'} → To: {to_status or 'Unknown'}"
+                )
+
+        # -----------------------------
+        # Rules
+        # -----------------------------
+        doc.add_heading("Rules", 1)
+
+        for rule in grouped.get("case-rule", []):
+            if not isinstance(rule, dict):
+                continue
+
+            name = get_label(rule)
+            doc.add_paragraph(str(name))
+
+        # -----------------------------
         # Emails
-        doc.add_heading("Notifications", level=1)
+        # -----------------------------
+        doc.add_heading("Notifications", 1)
 
         for email in grouped.get("alert-email-template", []):
             if not isinstance(email, dict):
@@ -191,12 +232,12 @@ async def upload(file: UploadFile = File(...)):
             subject = email.get("subject") or "No subject"
             body = email.get("body") or ""
 
-            doc.add_heading(subject, level=2)
+            doc.add_heading(subject, 2)
 
             if body:
-                preview = body[:300]
-                doc.add_paragraph(preview)
+                doc.add_paragraph(body[:300])
 
+        # Save
         doc.save(OUTPUT_FILE)
 
         # Cleanup
