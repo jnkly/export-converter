@@ -85,46 +85,128 @@ async def upload(file: UploadFile = File(...)):
             rtype = key.split("::")[0]
             grouped.setdefault(rtype, []).append(value)
 
-        # Build Word doc
-        doc = Document()
-        doc.add_heading("Form Specification", 0)
+        # -----------------------------
+# Build structured form spec
+# -----------------------------
 
-        # Fields
-        doc.add_heading("Fields", level=1)
-        for field in grouped.get("case-field", []):
-            if not isinstance(field, dict):
-                continue
+def get_label(field):
+    return (
+        field.get("label")
+        or field.get("title")
+        or field.get("name")
+        or field.get("key")
+        or "Unnamed field"
+    )
 
-            label = field.get("label", "Unnamed field")
-            dtype = field.get("data_type", "unknown")
+def get_type(field):
+    return (
+        field.get("data_type")
+        or field.get("type")
+        or field.get("field_type")
+        or "unknown"
+    )
 
-            doc.add_heading(label, level=2)
-            doc.add_paragraph(f"Type: {dtype}")
+def is_user_field(field):
+    # Heuristic: skip system/internal fields
+    name = str(field.get("name", "")).lower()
 
-        # Workflow
-        doc.add_heading("Workflow", level=1)
-        for status in grouped.get("case-status", []):
-            if not isinstance(status, dict):
-                continue
+    return not any(x in name for x in [
+        "created",
+        "updated",
+        "status",
+        "reference",
+        "id",
+        "internal"
+    ])
 
-            name = status.get("label", "Unnamed status")
-            doc.add_paragraph(name)
+def get_required(field):
+    return field.get("required") or field.get("is_required") or False
 
-        # Emails
-        doc.add_heading("Emails", level=1)
-        for email in grouped.get("alert-email-template", []):
-            if not isinstance(email, dict):
-                continue
+def get_help_text(field):
+    return field.get("help_text") or field.get("description") or ""
 
-            subject = email.get("subject", "No subject")
-            doc.add_heading(subject, level=2)
+def get_options(field):
+    # For dropdowns / radios
+    return field.get("options") or field.get("choices") or []
 
-        doc.save(OUTPUT_FILE)
 
-        # Cleanup upload
-        os.remove(zip_path)
+# -----------------------------
+# Create Word doc (GDS-style)
+# -----------------------------
 
-        return FileResponse(OUTPUT_FILE, filename="form-spec.docx")
+doc = Document()
 
-    except Exception as e:
-        return {"error": str(e)}
+doc.add_heading("Form specification", 0)
+
+# Overview
+doc.add_heading("Overview", level=1)
+doc.add_paragraph("Generated from Jadu export. This describes the user-facing form structure.")
+
+# Fields section
+doc.add_heading("Form fields", level=1)
+
+fields = grouped.get("case-field", [])
+
+for field in fields:
+    if not isinstance(field, dict):
+        continue
+
+    if not is_user_field(field):
+        continue
+
+    label = get_label(field)
+    ftype = get_type(field)
+    required = get_required(field)
+    help_text = get_help_text(field)
+    options = get_options(field)
+
+    doc.add_heading(str(label), level=2)
+
+    doc.add_paragraph(f"Type: {ftype}")
+    doc.add_paragraph(f"Required: {'Yes' if required else 'No'}")
+
+    if help_text:
+        doc.add_paragraph(f"Help text: {help_text}")
+
+    if options and isinstance(options, list):
+        doc.add_paragraph("Options:")
+        for opt in options:
+            doc.add_paragraph(f"- {opt}", style='List Bullet')
+
+
+# Workflow
+doc.add_heading("Case workflow", level=1)
+
+for status in grouped.get("case-status", []):
+    if not isinstance(status, dict):
+        continue
+
+    name = (
+        status.get("label")
+        or status.get("title")
+        or status.get("name")
+        or "Unnamed status"
+    )
+
+    doc.add_paragraph(str(name))
+
+
+# Emails
+doc.add_heading("Notifications", level=1)
+
+for email in grouped.get("alert-email-template", []):
+    if not isinstance(email, dict):
+        continue
+
+    subject = email.get("subject") or "No subject"
+    body = email.get("body") or ""
+
+    doc.add_heading(subject, level=2)
+
+    # Trim long bodies
+    if body:
+        preview = body[:300]
+        doc.add_paragraph(preview)
+
+
+doc.save(OUTPUT_FILE)
