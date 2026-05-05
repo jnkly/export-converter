@@ -1,6 +1,3 @@
-# app.py
-# Minimal FastAPI app to upload a Jadu export ZIP and return a Word doc spec
-
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse, FileResponse
 import zipfile
@@ -32,81 +29,102 @@ def home():
 
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-    zip_path = os.path.join(UPLOAD_DIR, file.filename)
+    try:
+        # Save uploaded file
+        zip_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(zip_path, "wb") as f:
+            f.write(await file.read())
 
-    # Save uploaded file
-    with open(zip_path, "wb") as f:
-        f.write(await file.read())
+        # Reset extract folder
+        if os.path.exists(EXTRACT_DIR):
+            shutil.rmtree(EXTRACT_DIR)
+        os.makedirs(EXTRACT_DIR, exist_ok=True)
 
-    # Clean extract dir
-    shutil.rmtree(EXTRACT_DIR)
-    os.makedirs(EXTRACT_DIR, exist_ok=True)
+        # Extract ZIP
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall(EXTRACT_DIR)
 
-    # Extract zip
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(EXTRACT_DIR)
+        # Find valid Jadu JSON
+        json_file = None
 
-    # Find JSON file
-    json_file = None
-    for root, _, files in os.walk(EXTRACT_DIR):
-        for f in files:
-            if f.endswith(".json"):
-                json_file = os.path.join(root, f)
+        for root, _, files in os.walk(EXTRACT_DIR):
+            for fname in files:
+                if fname.endswith(".json"):
+                    path = os.path.join(root, fname)
+
+                    # Skip empty files
+                    if os.path.getsize(path) == 0:
+                        continue
+
+                    try:
+                        with open(path, encoding="utf-8", errors="replace") as f:
+                            data = json.load(f)
+
+                        if "resources" in data:
+                            json_file = path
+                            break
+
+                    except Exception:
+                        continue
+
+            if json_file:
                 break
 
-    if not json_file:
-        return {"error": "No JSON file found in ZIP"}
+        if not json_file:
+            return {"error": "No valid Jadu JSON file found in ZIP"}
 
-    # Load JSON safely
-    with open(json_file, encoding="utf-8", errors="replace") as f:
-        data = json.load(f)
+        # Load JSON (safe encoding)
+        with open(json_file, encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
 
-    resources = data.get("resources", {})
+        resources = data.get("resources", {})
 
-    # Group resources
-    grouped = {}
-    for key, value in resources.items():
-        rtype = key.split("::")[0]
-        grouped.setdefault(rtype, []).append(value)
+        # Group resources
+        grouped = {}
+        for key, value in resources.items():
+            rtype = key.split("::")[0]
+            grouped.setdefault(rtype, []).append(value)
 
-    # Build document
-    doc = Document()
-    doc.add_heading("Form Specification", 0)
+        # Build Word doc
+        doc = Document()
+        doc.add_heading("Form Specification", 0)
 
-    # Fields
-    doc.add_heading("Fields", level=1)
-    for field in grouped.get("case-field", []):
-        label = field.get("label", "Unnamed field")
-        dtype = field.get("data_type", "unknown")
+        # Fields
+        doc.add_heading("Fields", level=1)
+        for field in grouped.get("case-field", []):
+            if not isinstance(field, dict):
+                continue
 
-        doc.add_heading(label, level=2)
-        doc.add_paragraph(f"Type: {dtype}")
+            label = field.get("label", "Unnamed field")
+            dtype = field.get("data_type", "unknown")
 
-    # Workflow
-    doc.add_heading("Workflow", level=1)
-    for status in grouped.get("case-status", []):
-        name = status.get("label", "Unnamed status")
-        doc.add_paragraph(name)
+            doc.add_heading(label, level=2)
+            doc.add_paragraph(f"Type: {dtype}")
 
-    # Emails
-    doc.add_heading("Emails", level=1)
-    for email in grouped.get("alert-email-template", []):
-        subject = email.get("subject", "No subject")
-        doc.add_heading(subject, level=2)
+        # Workflow
+        doc.add_heading("Workflow", level=1)
+        for status in grouped.get("case-status", []):
+            if not isinstance(status, dict):
+                continue
 
-    doc.save(OUTPUT_FILE)
+            name = status.get("label", "Unnamed status")
+            doc.add_paragraph(name)
 
-    # Cleanup uploaded zip (optional)
-    os.remove(zip_path)
+        # Emails
+        doc.add_heading("Emails", level=1)
+        for email in grouped.get("alert-email-template", []):
+            if not isinstance(email, dict):
+                continue
 
-    return FileResponse(OUTPUT_FILE, filename="form-spec.docx")
+            subject = email.get("subject", "No subject")
+            doc.add_heading(subject, level=2)
 
+        doc.save(OUTPUT_FILE)
 
-# requirements.txt
-# fastapi
-# uvicorn
-# python-docx
+        # Cleanup upload
+        os.remove(zip_path)
 
+        return FileResponse(OUTPUT_FILE, filename="form-spec.docx")
 
-# Procfile (for Render)
-# web: uvicorn app:app --host 0.0.0.0 --port 10000
+    except Exception as e:
+        return {"error": str(e)}
