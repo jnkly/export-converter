@@ -16,6 +16,47 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 
+# -----------------------------
+# Helper functions (safe + simple)
+# -----------------------------
+
+def get_label(field):
+    return (
+        field.get("label")
+        or field.get("title")
+        or field.get("name")
+        or field.get("key")
+        or "Unnamed field"
+    )
+
+def get_type(field):
+    return (
+        field.get("data_type")
+        or field.get("type")
+        or field.get("field_type")
+        or "unknown"
+    )
+
+def is_user_field(field):
+    name = str(field.get("name", "")).lower()
+    return not any(x in name for x in [
+        "created", "updated", "status", "reference", "id", "internal"
+    ])
+
+def get_required(field):
+    return field.get("required") or field.get("is_required") or False
+
+def get_help_text(field):
+    return field.get("help_text") or field.get("description") or ""
+
+def get_options(field):
+    return field.get("options") or field.get("choices") or []
+
+
+# -----------------------------
+# Routes
+# -----------------------------
+
 @app.get("/", response_class=HTMLResponse)
 def home():
     return """
@@ -52,7 +93,6 @@ async def upload(file: UploadFile = File(...)):
                 if fname.endswith(".json"):
                     path = os.path.join(root, fname)
 
-                    # Skip empty files
                     if os.path.getsize(path) == 0:
                         continue
 
@@ -73,7 +113,7 @@ async def upload(file: UploadFile = File(...)):
         if not json_file:
             return {"error": "No valid Jadu JSON file found in ZIP"}
 
-        # Load JSON (safe encoding)
+        # Load JSON
         with open(json_file, encoding="utf-8", errors="replace") as f:
             data = json.load(f)
 
@@ -86,127 +126,83 @@ async def upload(file: UploadFile = File(...)):
             grouped.setdefault(rtype, []).append(value)
 
         # -----------------------------
-# Build structured form spec
-# -----------------------------
+        # Build Word document
+        # -----------------------------
 
-def get_label(field):
-    return (
-        field.get("label")
-        or field.get("title")
-        or field.get("name")
-        or field.get("key")
-        or "Unnamed field"
-    )
+        doc = Document()
 
-def get_type(field):
-    return (
-        field.get("data_type")
-        or field.get("type")
-        or field.get("field_type")
-        or "unknown"
-    )
+        doc.add_heading("Form specification", 0)
 
-def is_user_field(field):
-    # Heuristic: skip system/internal fields
-    name = str(field.get("name", "")).lower()
+        # Overview
+        doc.add_heading("Overview", level=1)
+        doc.add_paragraph("Generated from Jadu export. This describes the user-facing form structure.")
 
-    return not any(x in name for x in [
-        "created",
-        "updated",
-        "status",
-        "reference",
-        "id",
-        "internal"
-    ])
+        # Fields
+        doc.add_heading("Form fields", level=1)
 
-def get_required(field):
-    return field.get("required") or field.get("is_required") or False
+        for field in grouped.get("case-field", []):
+            if not isinstance(field, dict):
+                continue
 
-def get_help_text(field):
-    return field.get("help_text") or field.get("description") or ""
+            if not is_user_field(field):
+                continue
 
-def get_options(field):
-    # For dropdowns / radios
-    return field.get("options") or field.get("choices") or []
+            label = get_label(field)
+            ftype = get_type(field)
+            required = get_required(field)
+            help_text = get_help_text(field)
+            options = get_options(field)
 
+            doc.add_heading(str(label), level=2)
+            doc.add_paragraph(f"Type: {ftype}")
+            doc.add_paragraph(f"Required: {'Yes' if required else 'No'}")
 
-# -----------------------------
-# Create Word doc (GDS-style)
-# -----------------------------
+            if help_text:
+                doc.add_paragraph(f"Help text: {help_text}")
 
-doc = Document()
+            if options and isinstance(options, list):
+                doc.add_paragraph("Options:")
+                for opt in options:
+                    doc.add_paragraph(f"- {opt}", style='List Bullet')
 
-doc.add_heading("Form specification", 0)
+        # Workflow
+        doc.add_heading("Case workflow", level=1)
 
-# Overview
-doc.add_heading("Overview", level=1)
-doc.add_paragraph("Generated from Jadu export. This describes the user-facing form structure.")
+        for status in grouped.get("case-status", []):
+            if not isinstance(status, dict):
+                continue
 
-# Fields section
-doc.add_heading("Form fields", level=1)
+            name = (
+                status.get("label")
+                or status.get("title")
+                or status.get("name")
+                or "Unnamed status"
+            )
 
-fields = grouped.get("case-field", [])
+            doc.add_paragraph(str(name))
 
-for field in fields:
-    if not isinstance(field, dict):
-        continue
+        # Emails
+        doc.add_heading("Notifications", level=1)
 
-    if not is_user_field(field):
-        continue
+        for email in grouped.get("alert-email-template", []):
+            if not isinstance(email, dict):
+                continue
 
-    label = get_label(field)
-    ftype = get_type(field)
-    required = get_required(field)
-    help_text = get_help_text(field)
-    options = get_options(field)
+            subject = email.get("subject") or "No subject"
+            body = email.get("body") or ""
 
-    doc.add_heading(str(label), level=2)
+            doc.add_heading(subject, level=2)
 
-    doc.add_paragraph(f"Type: {ftype}")
-    doc.add_paragraph(f"Required: {'Yes' if required else 'No'}")
+            if body:
+                preview = body[:300]
+                doc.add_paragraph(preview)
 
-    if help_text:
-        doc.add_paragraph(f"Help text: {help_text}")
+        doc.save(OUTPUT_FILE)
 
-    if options and isinstance(options, list):
-        doc.add_paragraph("Options:")
-        for opt in options:
-            doc.add_paragraph(f"- {opt}", style='List Bullet')
+        # Cleanup
+        os.remove(zip_path)
 
+        return FileResponse(OUTPUT_FILE, filename="form-spec.docx")
 
-# Workflow
-doc.add_heading("Case workflow", level=1)
-
-for status in grouped.get("case-status", []):
-    if not isinstance(status, dict):
-        continue
-
-    name = (
-        status.get("label")
-        or status.get("title")
-        or status.get("name")
-        or "Unnamed status"
-    )
-
-    doc.add_paragraph(str(name))
-
-
-# Emails
-doc.add_heading("Notifications", level=1)
-
-for email in grouped.get("alert-email-template", []):
-    if not isinstance(email, dict):
-        continue
-
-    subject = email.get("subject") or "No subject"
-    body = email.get("body") or ""
-
-    doc.add_heading(subject, level=2)
-
-    # Trim long bodies
-    if body:
-        preview = body[:300]
-        doc.add_paragraph(preview)
-
-
-doc.save(OUTPUT_FILE)
+    except Exception as e:
+        return {"error": str(e)}
